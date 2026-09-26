@@ -118,6 +118,13 @@ python -m pytest -q
   （履歴は分断されるが、本人が明示的に閉じた意思を優先する簡略化・`ops/report.py`）。
 - **GitHub cronの遅延**: 数時間遅れることがある前提で6時間間隔にしている。急ぎたい
   場合は`workflow_dispatch`で手動実行する。
+- **Claude実行ステップ（`claude -p ...`）が失敗した周**（利用枠切れ・モデル過負荷等）は
+  `continue-on-error: true`＋`if: always()`で以降のguard/executor/KPI再計算/Drive書き戻し/
+  日報を必ず実行し、最後の「Fail job if PDCA agent step failed」ステップでジョブ自体は
+  正しく失敗表示にする。Claude実行の失敗理由そのもの（例:
+  「You've hit your session limit」）はGitHub Actionsのそのステップのログにのみ残り、
+  Drive側のLOG/ダッシュボードには「その周は何も進まなかった」という結果以外は記録しない
+  簡略化（2026-09-27 検証run 36276915948で発覚・修正）。
 - **PR同時実行の競合**: `concurrency: group: pdca`で直列化しているため、人間が同時に
   mainへ手で push するケースの競合は考慮していない。
 

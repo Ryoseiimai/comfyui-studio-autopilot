@@ -77,6 +77,11 @@ jobs:
 
       - name: Run PDCA agent (Claude)
         if: steps.mode.outputs.dry_run != '1'
+        id: run_claude
+        # continue-on-error: Claude実行が失敗（利用枠切れ等）してもguard以降の決定論
+        # フェーズを必ず走らせるため。ジョブ全体の成否は最後の
+        # 「Fail job if PDCA agent step failed」ステップで正しく反映する。
+        continue-on-error: true
         run: |
           claude -p "$(cat ops/prompt.md)" --model sonnet --max-turns 80 \
             --dangerously-skip-permissions --no-session-persistence < /dev/null
@@ -88,10 +93,16 @@ jobs:
         if: steps.mode.outputs.dry_run == '1'
         run: python -m ops.stub_agent
 
+      # 以降は if: always() で必ず実行する。Claude実行ステップが失敗した場合に
+      # ここから下（guard/executor/KPI再計算/Drive書き戻し/日報）がまるごと
+      # スキップされると、失敗した事実がDrive・Issueのどこにも残らない
+      # サイレント失敗になる（2026-09-27 検証run 36276915948で実際に発生・要修正点として発見）。
       - name: Guard (deterministic enforcement of protected paths / secrets / size)
+        if: always()
         run: python -m ops.guard
 
       - name: Restore rclone.conf for executor
+        if: always()
         run: |
           mkdir -p ~/.config/rclone
           printf '%s' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
@@ -99,22 +110,27 @@ jobs:
           RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
 
       - name: Executor (allow-listed drive_write / hf_fetch / gpu_generate)
+        if: always()
         run: python -m ops.executor
         env:
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
 
       - name: Recompute KPI and dashboard (before pushing state back to Drive)
+        if: always()
         run: |
           python -m ops.kpi
           python -m ops.report --dashboard-only
 
       - name: Push state back to Drive
+        if: always()
         run: rclone copy work/state/ "ryosei_google_drive:AI素材/ComfyUIスタジオ/PDCA"
 
       - name: Remove rclone.conf (no longer needed)
+        if: always()
         run: rm -f ~/.config/rclone/rclone.conf
 
       - name: Handle code changes (branch -> PR -> test -> squash merge)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -148,6 +164,13 @@ jobs:
           fi
 
       - name: Daily report (JST21時以降・1日1回だけIssueへ5行以内)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m ops.report
+
+      - name: Fail job if PDCA agent step failed
+        if: always() && steps.run_claude.outcome == 'failure'
+        run: |
+          echo "::error::Run PDCA agent (Claude) step failed this cycle (see that step's log for detail, e.g. session limit). Guard/executor/KPI/Drive push/report still ran via if: always()."
+          exit 1
