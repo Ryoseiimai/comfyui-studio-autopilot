@@ -1,6 +1,6 @@
 # comfyui-studio-autopilot
 
-PCが閉じていても、GitHub Actions上でClaude（sonnet）が6時間おきにPlan→Do→Check→Actを
+PCが閉じていても、GitHub Actions上でClaude（sonnet）が3時間おきにPlan→Do→Check→Actを
 1周し、ComfyUIスタジオの北極星（**商用可モデルだけで作ったAI画像作品で初売上を立てる。
 Patreon／DLsite。全年齢から**）に向けて少しずつ前へ進める自走エンジン。
 
@@ -10,7 +10,7 @@ Google Drive（非公開）の `AI素材/ComfyUIスタジオ/PDCA/` に置く。
 ## 仕組み図
 
 ```
-GitHub Actions cron (6時間おき, publicリポなので分は無料) ／ workflow_dispatch
+GitHub Actions cron (3時間おき, publicリポなので分は無料) ／ workflow_dispatch
    │
    ▼
 .github/workflows/pdca.yml
@@ -64,7 +64,7 @@ GitHub Actions cron (6時間おき, publicリポなので分は無料) ／ workf
    `ops/bootstrap_state.py` で自動的に作る。
 4. `workflow_dispatch` で `dry_run=1` を1回実行して疎通確認する（Claudeを呼ばず
    `ops/stub_agent.py` が代わりに動くため無料）。
-5. 問題なければ `dry_run=0`（本番）で実行、または6時間おきのcronに任せる。
+5. 問題なければ `dry_run=0`（本番）で実行、または3時間おきのcronに任せる。
 
 ## 止め方
 
@@ -87,7 +87,7 @@ python -m pytest -q
 
 | 段階 | 内容 | 判定に使う証拠ファイル |
 |---|---|---|
-| S0 | エンジンが無人で回る | `work/state/notes/cycle_count.json`（このスクリプトの起動回数） |
+| S0 | エンジンが無人で回る | `KPI.json` の `agent_success_count >= 1`（Claudeの成功回数） |
 | S1 | 商用可モデルが倉庫にそろう | `model_license_survey.json` + `fetched_models.json` |
 | S2 | クラウドで1枚生成できる | `executor_log.jsonl` のgpu_generate成功 |
 | S3 | 品質基準合格のサンプルN枚 | `quality_samples.json` |
@@ -116,15 +116,20 @@ python -m pytest -q
   自動再計算する設計（自己申告でKPIが上がらないようにするための意図的な役割分担）。
 - **日報Issueが本人に閉じられた場合**、次に見つからなければ新規作成する
   （履歴は分断されるが、本人が明示的に閉じた意思を優先する簡略化・`ops/report.py`）。
-- **GitHub cronの遅延**: 数時間遅れることがある前提で6時間間隔にしている。急ぎたい
+- **GitHub cronの遅延**: 数時間遅れることがある前提で3時間間隔にしている。急ぎたい
   場合は`workflow_dispatch`で手動実行する。
 - **Claude実行ステップ（`claude -p ...`）が失敗した周**（利用枠切れ・モデル過負荷等）は
   `continue-on-error: true`＋`if: always()`で以降のguard/executor/KPI再計算/Drive書き戻し/
   日報を必ず実行し、最後の「Fail job if PDCA agent step failed」ステップでジョブ自体は
-  正しく失敗表示にする。Claude実行の失敗理由そのもの（例:
-  「You've hit your session limit」）はGitHub Actionsのそのステップのログにのみ残り、
-  Drive側のLOG/ダッシュボードには「その周は何も進まなかった」という結果以外は記録しない
-  簡略化（2026-09-27 検証run 36276915948で発覚・修正）。
+  正しく失敗表示にする。stdout+stderrは `work/claude_out.txt` に保存し、終了結果と
+  終了時刻からKPIを更新する。失敗理由は「利用枠切れ」または「Claude実行失敗」として
+  ダッシュボードに表示する（出力原文はDriveへ同期しない）。
+- **実行間隔**: scheduleでは前回Claude成功から5時間未満、または利用枠の解除時刻前なら
+  `ops/gate.py` がClaudeをスキップし、理由をLOGに追記する。手動実行は待ち時間を無視する。
+  skip・dry_runはClaudeの成功に数えない。`cycle_count`は失敗・skipを含む総実行数。
+  旧KPIに成功履歴が無い場合は0から始める。解除時刻は出力の `resets h:mmam/pm (Zone)`
+  を解析し、Claude終了時刻より後の最初の該当時刻をUTCで保存する。
+
 - **PR同時実行の競合**: `concurrency: group: pdca`で直列化しているため、人間が同時に
   mainへ手で push するケースの競合は考慮していない。
 
@@ -132,13 +137,14 @@ python -m pytest -q
 
 | ファイル | 役割 |
 |---|---|
-| `.github/workflows/pdca.yml` | cron 6時間おき＋workflow_dispatch |
+| `.github/workflows/pdca.yml` | cron 3時間おき＋workflow_dispatch |
 | `GUARDRAILS.md` | 保護ファイル。お金・外部発信・商用利用・作品内容・秘密のルール |
 | `ops/prompt.md` | PDCAエージェント（Claude）への指示 |
 | `ops/paths.py` | 定数・置き場所の一元管理 |
 | `ops/bootstrap_state.py` | Drive状態の初期値を決定論的に作る（無ければ作る・上書きしない） |
 | `ops/guard.py` | Claude実行後の決定論ガード（保護パス・シークレット・サイズ上限） |
 | `ops/executor.py` | 許可リスト実行器（drive_write / hf_fetch / gpu_generate=Replicate） |
+| `ops/gate.py` | scheduleの成功後5時間待ち・利用枠解除待ちの判定 |
 | `ops/kpi.py` | 段階S0〜S6と数値の自動判定 |
 | `ops/report.py` | Driveダッシュボード更新＋1日1回のIssue日報 |
 | `ops/stub_agent.py` | dry_run時にClaudeの代わりに動く決定論スタブ |

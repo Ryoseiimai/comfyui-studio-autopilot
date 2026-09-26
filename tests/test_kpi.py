@@ -105,6 +105,7 @@ def test_evaluate_stage_all_false_is_s0_unachieved():
 def test_evaluate_stage_progresses_sequentially_up_to_gap():
     counts = {
         "cycle_count": 1,
+        "agent_success_count": 1,
         "commercial_models": 1,
         "generated_images": 1,
         "quality_pass_samples": 0,
@@ -124,6 +125,7 @@ def test_evaluate_stage_does_not_skip_ahead_over_a_gap():
     # S1が未達なら、S2条件を満たしていてもS0止まり（順序を守る=先に飛ばない）
     counts = {
         "cycle_count": 1,
+        "agent_success_count": 1,
         "commercial_models": 0,
         "generated_images": 1,
         "quality_pass_samples": 0,
@@ -138,6 +140,7 @@ def test_evaluate_stage_does_not_skip_ahead_over_a_gap():
 def test_evaluate_stage_reaches_s6_when_everything_achieved():
     counts = {
         "cycle_count": 10,
+        "agent_success_count": 1,
         "commercial_models": 5,
         "generated_images": 20,
         "quality_pass_samples": 10,
@@ -159,7 +162,7 @@ def test_compute_kpi_writes_generated_at_and_increments_cycle(tmp_path):
         json.dumps([{"file": "a.safetensors", "category": "商用可"}]), encoding="utf-8"
     )
 
-    result = kpi.compute_kpi(state_dir, notes_dir)
+    result = kpi.compute_kpi(state_dir, notes_dir, agent_status="success")
 
     assert result["generated_at"]
     assert result["counts"]["cycle_count"] == 1
@@ -176,3 +179,88 @@ def test_compute_kpi_without_increment_does_not_bump_cycle_count(tmp_path):
     kpi.increment_cycle_count(notes_dir)
     result = kpi.compute_kpi(state_dir, notes_dir, increment=False)
     assert result["counts"]["cycle_count"] == 1
+
+
+def test_legacy_cycle_count_does_not_achieve_s0(tmp_path):
+    (tmp_path / "KPI.json").write_text(json.dumps({"counts": {"cycle_count": 99}}))
+    result = kpi.compute_kpi(tmp_path, tmp_path / "notes")
+    assert result["agent_success_count"] == 0
+    assert result["agent_fail_count"] == 0
+    assert result["last_agent_status"] == ""
+    assert result["last_agent_success_at"] == ""
+    assert result["last_failure_reason"] == ""
+    assert result["limit_reset_at"] == ""
+    assert not result["stages"]["S0"]["achieved"]
+
+
+def test_failure_skip_success_sequence(tmp_path):
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc)
+    def cycle(status, output=""):
+        result = kpi.compute_kpi(tmp_path, tmp_path / "notes", agent_status=status,
+                                 agent_output=output, now=now)
+        (tmp_path / "KPI.json").write_text(json.dumps(result))
+        return result
+    failed = cycle("failure", "You've hit your session limit · resets 1:30am (UTC)")
+    assert not failed["stages"]["S0"]["achieved"]
+    assert failed["agent_fail_count"] == 1
+    assert failed["last_failure_reason"] == "利用枠切れ"
+    assert failed["limit_reset_at"] == "2026-09-27T01:30:00+00:00"
+    skipped = cycle("skip")
+    assert not skipped["stages"]["S0"]["achieved"]
+    assert skipped["agent_success_count"] == 0
+    assert skipped["agent_fail_count"] == 1
+    assert skipped["last_agent_status"] == "skip"
+    assert skipped["limit_reset_at"] == failed["limit_reset_at"]
+    assert skipped["last_failure_reason"] == failed["last_failure_reason"]
+    success = cycle("success")
+    assert success["stages"]["S0"]["achieved"]
+    assert success["agent_success_count"] == 1
+    assert success["last_agent_success_at"] == now.isoformat(timespec="seconds")
+    assert success["limit_reset_at"] == success["last_failure_reason"] == ""
+    failed_again = cycle("failure", "overloaded with sensitive output")
+    assert failed_again["stages"]["S0"]["achieved"]
+    assert failed_again["agent_fail_count"] == 2
+    assert failed_again["last_agent_success_at"] == success["last_agent_success_at"]
+    assert failed_again["last_failure_reason"] == "Claude実行失敗"
+    assert failed_again["counts"]["cycle_count"] == 4
+
+
+def test_dashboard_displays_all_agent_fields(tmp_path):
+    from ops.report import build_dashboard_markdown
+    from ops.gate import AGENT_DEFAULTS
+    result = kpi.compute_kpi(tmp_path, tmp_path / "notes", agent_status="failure")
+    dashboard = build_dashboard_markdown(result, "", "なし", "")
+    for key in AGENT_DEFAULTS:
+        assert key in dashboard
+
+
+def test_bootstrap_has_no_premature_human_request(tmp_path):
+    from ops.bootstrap_state import ensure_default_state
+    from ops.report import needs_human_is_active
+    ensure_default_state(tmp_path)
+    assert (tmp_path / "NEEDS_HUMAN.md").read_text() == "なし\n"
+    assert not needs_human_is_active((tmp_path / "NEEDS_HUMAN.md").read_text())
+
+
+def test_main_reads_capture_and_actual_agent_end_time(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(kpi, "STATE_DIR", state)
+    monkeypatch.setattr(kpi, "NOTES_DIR", state / "notes")
+    monkeypatch.setattr(kpi, "WORK_ROOT", tmp_path)
+    monkeypatch.setenv("AGENT_OUTCOME", "failure")
+    monkeypatch.setenv("AGENT_FINISHED_AT", "2026-09-27T01:29:59Z")
+    (tmp_path / "claude_out.txt").write_text("You've hit your session limit · resets 1:30am (UTC)")
+    kpi.main()
+    result = json.loads((state / "KPI.json").read_text())
+    assert result["limit_reset_at"] == "2026-09-27T01:30:00+00:00"
+    assert result["agent_fail_count"] == 1
+    monkeypatch.setenv("AGENT_OUTCOME", "skipped")
+    monkeypatch.setenv("AGENT_FINISHED_AT", "")
+    kpi.main()
+    result = json.loads((state / "KPI.json").read_text())
+    assert result["agent_fail_count"] == 1
+    assert result["agent_success_count"] == 0
+    assert result["last_agent_status"] == "skip"
+    assert result["limit_reset_at"] == "2026-09-27T01:30:00+00:00"

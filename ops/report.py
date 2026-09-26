@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from ops.gate import AGENT_DEFAULTS
 from ops.paths import DASHBOARD_MD, GUARD_LOG_MD, LOG_MD, NEEDS_HUMAN_MD, NOTES_DIR, STATE_DIR
 
 ISSUE_TITLE = "PDCA日報"
@@ -78,6 +79,12 @@ def build_dashboard_markdown(kpi: dict, log_text: str, needs_human_text: str, gu
         "",
         "```json",
         json.dumps(counts, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## Claude実行状況",
+        "",
+        "```json",
+        json.dumps({key: kpi.get(key, default) for key, default in AGENT_DEFAULTS.items()}, ensure_ascii=False, indent=2),
         "```",
         "",
         "## 直近LOG",

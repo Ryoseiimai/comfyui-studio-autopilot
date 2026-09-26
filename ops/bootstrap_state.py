@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ops.gate import AGENT_DEFAULTS
 from ops.paths import BACKLOG_MD, GOAL_MD, KPI_JSON, LOG_MD, NEEDS_HUMAN_MD, STATE_DIR
 
 GOAL_MD_DEFAULT = """# GOAL
@@ -18,7 +19,7 @@ GOAL_MD_DEFAULT = """# GOAL
 （Patreon／DLsite）。全年齢（SFW）から。
 
 ## 段階（S0〜S6・順番に積む）
-- S0: エンジンが無人で回る（GitHub Actionsで6時間おきにPDCAが1周する）
+- S0: エンジンが無人で回る（Claudeの周が1回以上成功する）
 - S1: 商用可モデルが倉庫にそろう（全年齢イラスト向けに最低限使えるセットができる）
 - S2: クラウドで1枚生成できる（GPUプロバイダ経由でComfyUIワークフローが1枚通る）
 - S3: 品質基準合格のサンプルN枚（Claudeの画像チェック採点表で合格したものが十分な枚数）
@@ -32,6 +33,7 @@ GOAL_MD_DEFAULT = """# GOAL
 """
 
 KPI_JSON_DEFAULT: dict = {
+    **AGENT_DEFAULTS,
     "generated_at": None,
     "stage": "S0",
     "stages": {},
@@ -63,8 +65,8 @@ BACKLOG_MD_DEFAULT = """# BACKLOG
       第一候補モデル: FLUX.1 schnell（Apache-2.0）／SDXL（OpenRAIL++）／
       Qwen-Image（Apache-2.0・要裏取り）。**FLUX.1 devは非商用ライセンスのため使わない**。
       ワークフローJSON（ComfyUI API形式）の具体的な組み立てとテスト（モック）を進める。
-      本人作業（Replicate登録＋デビットで$10入金）はコードとテストが揃ってから
-      NEEDS_HUMANに出す運用（このrepoでは初回セットアップ完了と同時に有効化済み）。
+      本人作業（Replicate登録＋デビットで$10入金）は実際に1枚作るコードとモックテストがmerge済みになってから
+      NEEDS_HUMANに出す。APIトークンのSecret登録はAI側で行う。
 - [ ] 4. 品質基準とClaudeの画像チェック採点表を作る（全年齢・実在人物や既存キャラの
       排除チェックを含む）。
 - [ ] 5. 全年齢AIイラストの売れ筋・価格帯（DLsite/Patreon）を調査し、企画案3つを
@@ -77,21 +79,7 @@ LOG_MD_DEFAULT = """# LOG
 
 """
 
-NEEDS_HUMAN_MD_DEFAULT = """# NEEDS_HUMAN
-
-本人にしかできないことだけ、有効1件までここに書く。無ければ「なし」。
-
-## Replicateへの登録とデビットカードでの$10入金
-- 何が止まる: GPU生成（S2）が動かない。`REPLICATE_API_TOKEN` が未登録の間、
-  `gpu_generate` は常に「GPU未設定」でスキップされる（`ops/executor.py`）。
-- それが動くと: ComfyUIワークフローをクラウドGPU（Replicate）で1枚生成できるようになり、
-  S2（クラウドで1枚生成できる）に進める。
-- 手順: https://replicate.com でアカウント登録 → Billingでデビットカードを登録し
-  $10入金 → API tokenを発行 → このrepoのGitHub Secret `REPLICATE_API_TOKEN` に登録
-  （値は画面に出さず直接Secretへ）。
-- 前提: 実行コード（BACKLOG 3番）とテストが揃ってから本人に依頼する運用のため、
-  このrepoの初回セットアップ完了と同時に有効化している。
-"""
+NEEDS_HUMAN_MD_DEFAULT = "なし\n"
 
 
 def ensure_default_state(state_dir: Path) -> list[str]:

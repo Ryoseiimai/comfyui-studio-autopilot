@@ -2,8 +2,8 @@ name: pdca
 
 on:
   schedule:
-    # 6時間おき（GitHub cronは混雑時に数時間遅れることがある前提で運用する）
-    - cron: "23 */6 * * *"
+    # 3時間おき（GitHub cronは混雑時に数時間遅れることがある前提で運用する）
+    - cron: "23 */3 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -68,23 +68,31 @@ jobs:
       - name: Bootstrap default state (deterministic, only fills what's missing)
         run: python -m ops.bootstrap_state
 
+      - name: Gate scheduled Claude runs
+        id: gate
+        run: python -m ops.gate
+
       - name: Remove rclone.conf before untrusted agent step
         run: rm -f ~/.config/rclone/rclone.conf
 
       - name: Install Claude Code
-        if: steps.mode.outputs.dry_run != '1'
+        if: steps.mode.outputs.dry_run != '1' && steps.gate.outputs.skip != 'true'
         run: npm i -g @anthropic-ai/claude-code
 
       - name: Run PDCA agent (Claude)
-        if: steps.mode.outputs.dry_run != '1'
+        if: steps.mode.outputs.dry_run != '1' && steps.gate.outputs.skip != 'true'
         id: run_claude
         # continue-on-error: Claude実行が失敗（利用枠切れ等）してもguard以降の決定論
         # フェーズを必ず走らせるため。ジョブ全体の成否は最後の
         # 「Fail job if PDCA agent step failed」ステップで正しく反映する。
         continue-on-error: true
         run: |
+          set +e
           claude -p "$(cat ops/prompt.md)" --model sonnet --max-turns 80 \
-            --dangerously-skip-permissions --no-session-persistence < /dev/null
+            --dangerously-skip-permissions --no-session-persistence < /dev/null > work/claude_out.txt 2>&1
+          agent_exit=$?
+          echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          exit "$agent_exit"
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           USER: runner
@@ -117,6 +125,9 @@ jobs:
 
       - name: Recompute KPI and dashboard (before pushing state back to Drive)
         if: always()
+        env:
+          AGENT_OUTCOME: ${{ steps.run_claude.outcome }}
+          AGENT_FINISHED_AT: ${{ steps.run_claude.outputs.finished_at }}
         run: |
           python -m ops.kpi
           python -m ops.report --dashboard-only

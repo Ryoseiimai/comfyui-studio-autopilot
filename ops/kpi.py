@@ -5,7 +5,7 @@ Claudeの自己申告（LOG.mdに「できた」と書くだけ）ではKPIを�
 KPI.jsonは動かない（信頼性の担保）。
 
 段階の定義（`work/state/GOAL.md` と対応）:
-- S0 エンジンが無人で回る … このスクリプトが実行された回数（cycle_count）>= 1
+- S0 エンジンが無人で回る … Claudeの成功回数（agent_success_count）>= 1
 - S1 商用可モデルが倉庫にそろう … `model_license_survey.json`の商用可/有料ライセンスで可
   件数 + `fetched_models.json`の件数（executorが商用可否ゲート済みなので全件加算可） >= 1
 - S2 クラウドで1枚生成できる … `executor_log.jsonl`のgpu_generate成功 >= 1
@@ -24,7 +24,11 @@ S5・S6は本人にしかできないため、`work/state/human_flags.json` に�
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
+
+from ops.gate import AGENT_DEFAULTS, LIMIT_REASON, is_limit_failure, parse_iso, parse_limit_reset
 
 from ops.paths import (
     EXECUTOR_LOG_JSONL,
@@ -32,6 +36,7 @@ from ops.paths import (
     KPI_JSON,
     NOTES_DIR,
     STATE_DIR,
+    WORK_ROOT,
 )
 
 MIN_COMMERCIAL_MODELS = 1
@@ -74,7 +79,7 @@ def _load_jsonl(path: Path) -> list[dict]:
 
 
 def increment_cycle_count(notes_dir: Path) -> int:
-    """このスクリプトが起動した回数（=完了したPDCA周回数の下限）を1増やして返す。"""
+    """このスクリプトが起動した回数（失敗・skipを含む総実行数）を1増やして返す。"""
     notes_dir.mkdir(parents=True, exist_ok=True)
     path = notes_dir / CYCLE_COUNT_JSON
     data = _load_json(path, {"count": 0})
@@ -114,7 +119,8 @@ def gather_evidence(state_dir: Path, notes_dir: Path) -> dict:
 def evaluate_stage(counts: dict) -> dict:
     """集めた数値から各段階のachieved/evidenceと、到達している最高段階を返す（純粋関数）。"""
     checks = {
-        "S0": (counts["cycle_count"] >= 1, f"cycle_count={counts['cycle_count']}（要1以上）"),
+        "S0": (counts.get("agent_success_count", 0) >= 1,
+               f"agent_success_count={counts.get('agent_success_count', 0)}（要1以上）"),
         "S1": (
             counts["commercial_models"] >= MIN_COMMERCIAL_MODELS,
             f"commercial_models={counts['commercial_models']}（要{MIN_COMMERCIAL_MODELS}以上）",
@@ -150,15 +156,39 @@ def evaluate_stage(counts: dict) -> dict:
     return {"stage": stage, "stages": stages}
 
 
-def compute_kpi(state_dir: Path, notes_dir: Path, *, increment: bool = True) -> dict:
-    from datetime import datetime, timezone
+def compute_kpi(
+    state_dir: Path, notes_dir: Path, *, increment: bool = True,
+    agent_status: str | None = None, agent_output: str = "",
+    now: datetime | None = None,
+) -> dict:
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    previous = _load_json(state_dir / KPI_JSON, {})
+    agent = {key: previous.get(key, default) for key, default in AGENT_DEFAULTS.items()}
+    if agent_status is not None:
+        if agent_status not in ("success", "failure", "skip"):
+            raise ValueError(f"Unknown agent status: {agent_status}")
+        agent["last_agent_status"] = agent_status
+        if agent_status == "success":
+            agent["agent_success_count"] += 1
+            agent["last_agent_success_at"] = now.isoformat(timespec="seconds")
+            agent["last_failure_reason"] = ""
+            agent["limit_reset_at"] = ""
+        elif agent_status == "failure":
+            agent["agent_fail_count"] += 1
+            limited = is_limit_failure(agent_output)
+            # Persist only a fixed category, never arbitrary output containing secrets.
+            agent["last_failure_reason"] = LIMIT_REASON if limited else "Claude実行失敗"
+            agent["limit_reset_at"] = parse_limit_reset(agent_output, now) if limited else ""
 
     if increment:
         increment_cycle_count(notes_dir)
     counts = gather_evidence(state_dir, notes_dir)
+    counts["agent_success_count"] = agent["agent_success_count"]
+    counts["agent_fail_count"] = agent["agent_fail_count"]
     result = evaluate_stage(counts)
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": now.isoformat(timespec="seconds"),
+        **agent,
         "stage": result["stage"],
         "stages": result["stages"],
         "counts": counts,
@@ -166,7 +196,14 @@ def compute_kpi(state_dir: Path, notes_dir: Path, *, increment: bool = True) -> 
 
 
 def main() -> None:
-    kpi = compute_kpi(STATE_DIR, NOTES_DIR)
+    outcome = os.environ.get("AGENT_OUTCOME", "skipped")
+    status = {"success": "success", "failure": "failure"}.get(outcome, "skip")
+    output_path = WORK_ROOT / "claude_out.txt"
+    output = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
+    kpi = compute_kpi(
+        STATE_DIR, NOTES_DIR, agent_status=status, agent_output=output,
+        now=parse_iso(os.environ.get("AGENT_FINISHED_AT", "")),
+    )
     (STATE_DIR / KPI_JSON).write_text(
         json.dumps(kpi, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
