@@ -1,0 +1,9 @@
+# 状態はGoogle Drive（非公開）が正本。publicリポには一切乗せない。
+/work/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store

@@ -1,0 +1,153 @@
+name: pdca
+
+on:
+  schedule:
+    # 6時間おき（GitHub cronは混雑時に数時間遅れることがある前提で運用する）
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1=DRY_RUN（Claudeを呼ばずops/stub_agent.pyで配管確認・無料） / 0=本番実行"
+        type: choice
+        options:
+          - "1"
+          - "0"
+        default: "0"
+
+concurrency:
+  group: pdca
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  pdca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Determine dry_run
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dry_run=${{ github.event.inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+
+      - name: Fetch state from Drive
+        run: |
+          mkdir -p work/state work/context
+          rclone copy "ryosei_google_drive:AI素材/ComfyUIスタジオ/PDCA" work/state/ || true
+          rclone copyto "ryosei_google_drive:AI素材/ComfyUIモデル倉庫/README.md" work/context/warehouse_README.md || true
+          rclone copyto "ryosei_google_drive:AI素材/ComfyUIモデル倉庫/.state/harvester.json" work/context/harvester_state.json || true
+
+      - name: Bootstrap default state (deterministic, only fills what's missing)
+        run: python -m ops.bootstrap_state
+
+      - name: Remove rclone.conf before untrusted agent step
+        run: rm -f ~/.config/rclone/rclone.conf
+
+      - name: Install Claude Code
+        if: steps.mode.outputs.dry_run != '1'
+        run: npm i -g @anthropic-ai/claude-code
+
+      - name: Run PDCA agent (Claude)
+        if: steps.mode.outputs.dry_run != '1'
+        run: |
+          claude -p "$(cat ops/prompt.md)" --model sonnet --max-turns 80 \
+            --dangerously-skip-permissions --no-session-persistence < /dev/null
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          USER: runner
+
+      - name: Run stub agent (dry_run substitute for Claude)
+        if: steps.mode.outputs.dry_run == '1'
+        run: python -m ops.stub_agent
+
+      - name: Guard (deterministic enforcement of protected paths / secrets / size)
+        run: python -m ops.guard
+
+      - name: Restore rclone.conf for executor
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONFIG" > ~/.config/rclone/rclone.conf
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+
+      - name: Executor (allow-listed drive_write / hf_fetch / gpu_generate)
+        run: python -m ops.executor
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+
+      - name: Recompute KPI and dashboard (before pushing state back to Drive)
+        run: |
+          python -m ops.kpi
+          python -m ops.report --dashboard-only
+
+      - name: Push state back to Drive
+        run: rclone copy work/state/ "ryosei_google_drive:AI素材/ComfyUIスタジオ/PDCA"
+
+      - name: Remove rclone.conf (no longer needed)
+        run: rm -f ~/.config/rclone/rclone.conf
+
+      - name: Handle code changes (branch -> PR -> test -> squash merge)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "no repo changes this cycle"
+            exit 0
+          fi
+
+          branch="pdca/auto-$(date -u +%Y%m%d-%H%M%S)"
+          git config user.name "pdca-autopilot[bot]"
+          git config user.email "pdca-autopilot@users.noreply.github.com"
+          # checkoutをpersist-credentials:falseにしているため、決定論フェーズ(ここ)でだけ
+          # 明示的にトークンを差し込んでpushする（未検証コード実行中のClaudeにはgit書き込み権限を渡さない）。
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "PDCA: automated cycle $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin "$branch"
+
+          pr_url=$(gh pr create --base main --head "$branch" \
+            --title "PDCA自動サイクル $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --body "GitHub Actions PDCAエージェントによる自動変更。テスト合格後にその場でsquash mergeされる。")
+          pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+
+          if pip install -r requirements.txt && python -m pytest -q; then
+            gh pr merge "$pr_number" --squash --delete-branch
+          else
+            echo "tests failed on $pr_url; leaving PR open for human review"
+          fi
+
+      - name: Daily report (JST21時以降・1日1回だけIssueへ5行以内)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m ops.report
