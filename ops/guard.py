@@ -2,7 +2,7 @@
 
 Claudeの自己申告や善意を信用せず、機械的に以下を強制する:
 1. 保護パス（`.github/**`・`ops/guard*`・`ops/executor*`・`ops/report*`・
-   `GUARDRAILS.md`）への変更 → 取り消す（git checkout / 削除）。
+   `ops/paths.py`・`lib/license.py`・`GUARDRAILS.md`）への変更 → 取り消す（git checkout / 削除）。
 2. 差分および `work/` 配下にシークレットらしき文字列
    （`sk-ant-`・`ya29.`・`refresh_token`・`-----BEGIN ...-----`）が含まれる → 取り消す。
 3. 変更後のファイルサイズが上限を超える → 取り消す。
@@ -18,7 +18,8 @@ Claudeの自己申告や善意を信用せず、機械的に以下を強制す�
 高度な検知は無い）。新しい形式の鍵が漏れても検知できない既知の限界があり、
 本格対応するときは detect-secrets 等の専用ツールへの置き換えが入口。
 保護対象は `.github/**`・`ops/guard*`・`ops/executor*`・`ops/report*`・
-`GUARDRAILS.md` のみで、`tests/` 配下（例: `tests/test_guard.py` 自身）は対象外
+`ops/paths.py`・`lib/license.py`・`GUARDRAILS.md` のみで、`tests/` 配下
+（例: `tests/test_guard.py` 自身）は対象外
 （spec通りの範囲）。Claudeがテストを書き換えて弱体化させることの防止は未対応。
 """
 from __future__ import annotations
@@ -40,6 +41,8 @@ PROTECTED_PATTERNS = (
     "ops/executor_*",
     "ops/report.py",
     "ops/report_*",
+    "ops/paths.py",
+    "lib/license.py",
     "GUARDRAILS.md",
 )
 

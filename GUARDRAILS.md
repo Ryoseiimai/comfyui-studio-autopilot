@@ -1,6 +1,7 @@
 # GUARDRAILS
 
-このファイルと `.github/**`・`ops/guard*`・`ops/executor*`・`ops/report*` は保護対象。
+このファイルと `.github/**`・`ops/guard*`・`ops/executor*`・`ops/report*`・
+`ops/paths.py`・`lib/license.py` は保護対象。
 Claude（PDCAエージェント）は絶対にこれらを書き換えない。書き換えても `ops/guard.py` が
 実行後に検出し、その変更を強制的に取り消してログに残す（Claudeの自己申告を信用しない）。
 
@@ -33,7 +34,7 @@ Claude（PDCAエージェント）は絶対にこれらを書き換えない。�
 ## 5. 秘密
 - トークン・APIキー・OAuthトークン等を表示・ログ出力・ファイル保存・コミットしない。
 - 自分の保護ファイル・ワークフロー（このファイル・`.github/**`・`ops/guard*`・
-  `ops/executor*`・`ops/report*`）を書き換えない。
+  `ops/executor*`・`ops/report*`・`ops/paths.py`・`lib/license.py`）を書き換えない。
 
 ## 6. できること（Claudeの作業範囲）
 - repo内の非保護ファイルの編集（コード・`ops/prompt.md`・`work/state/notes/` の調査メモ等）。

@@ -37,9 +37,60 @@ def test_is_protected_path_pure():
     assert guard.is_protected_path("ops/guard.py")
     assert guard.is_protected_path("ops/executor.py")
     assert guard.is_protected_path("ops/report_extra.py")
+    assert guard.is_protected_path("ops/paths.py")
+    assert guard.is_protected_path("lib/license.py")
     assert guard.is_protected_path("GUARDRAILS.md")
     assert not guard.is_protected_path("ops/prompt.md")
     assert not guard.is_protected_path("README.md")
+
+
+def test_paths_py_change_is_reverted(tmp_path):
+    """ops/paths.py はReplicate予算上限（REPLICATE_MONTHLY_CAP_USD等）を定義しており、
+    ここが保護対象から漏れると executor.py の上限チェックを実質無効化できてしまうため、
+    保護されることを確認する（確認済みの脆弱性の再現防止）。"""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _init_repo(repo_root)
+    (repo_root / "ops" / "paths.py").write_text(
+        "REPLICATE_MONTHLY_CAP_USD = 10.0\n", encoding="utf-8"
+    )
+    _run(["git", "add", "-A"], repo_root)
+    _run(["git", "commit", "-q", "-m", "add paths.py"], repo_root)
+
+    (repo_root / "ops" / "paths.py").write_text(
+        "REPLICATE_MONTHLY_CAP_USD = 999999.0\n", encoding="utf-8"
+    )
+
+    report = guard.run(repo_root, tmp_path / "work")
+
+    assert any(v["path"] == "ops/paths.py" for v in report["repo_violations"])
+    assert (repo_root / "ops" / "paths.py").read_text(encoding="utf-8") == (
+        "REPLICATE_MONTHLY_CAP_USD = 10.0\n"
+    )
+
+
+def test_license_py_change_is_reverted(tmp_path):
+    """lib/license.py は商用利用可否の判定ゲートそのものであり、ここが保護対象から
+    漏れると「商用不可」を「商用可」に書き換えて売り物に使える状態を作れてしまうため、
+    保護されることを確認する（確認済みの脆弱性の再現防止）。"""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _init_repo(repo_root)
+    (repo_root / "lib").mkdir(parents=True)
+    (repo_root / "lib" / "license.py").write_text("CATEGORY_OK = \"商用可\"\n", encoding="utf-8")
+    _run(["git", "add", "-A"], repo_root)
+    _run(["git", "commit", "-q", "-m", "add license.py"], repo_root)
+
+    (repo_root / "lib" / "license.py").write_text(
+        "CATEGORY_OK = \"商用可\"\nNON_COMMERCIAL_MARKERS = ()\n", encoding="utf-8"
+    )
+
+    report = guard.run(repo_root, tmp_path / "work")
+
+    assert any(v["path"] == "lib/license.py" for v in report["repo_violations"])
+    assert (repo_root / "lib" / "license.py").read_text(encoding="utf-8") == (
+        "CATEGORY_OK = \"商用可\"\n"
+    )
 
 
 def test_find_secret_matches_pure():
