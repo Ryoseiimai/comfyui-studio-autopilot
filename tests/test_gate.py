@@ -35,6 +35,26 @@ def test_old_or_invalid_timestamps(kpi):
     assert gate.decide(kpi, "schedule", NOW) == ""
 
 
+def test_limit_failure_without_parseable_reset_falls_back_to_cooldown():
+    # 解除時刻の文言を読めなかった場合（limit_reset_at=""）でも、直前の利用枠切れ
+    # から5h未満は様子見する（読めないまま叩き続けて枠をさらに消費しない）。
+    kpi = {"last_failure_reason": gate.LIMIT_REASON, "limit_reset_at": "",
+           "last_failure_at": (NOW - timedelta(hours=1)).isoformat()}
+    assert gate.decide(kpi, "schedule", NOW) == "skip: 枠解除待ち（解除時刻不明・様子見）"
+
+
+def test_limit_failure_without_parseable_reset_resumes_after_cooldown():
+    kpi = {"last_failure_reason": gate.LIMIT_REASON, "limit_reset_at": "",
+           "last_failure_at": (NOW - timedelta(hours=5)).isoformat()}
+    assert gate.decide(kpi, "schedule", NOW) == ""
+
+
+def test_non_limit_failure_without_reset_does_not_fall_back():
+    kpi = {"last_failure_reason": "Claude実行失敗", "limit_reset_at": "",
+           "last_failure_at": (NOW - timedelta(hours=1)).isoformat()}
+    assert gate.decide(kpi, "schedule", NOW) == ""
+
+
 def test_run_appends_one_line(tmp_path):
     (tmp_path / "KPI.json").write_text(json.dumps({"last_agent_success_at": NOW.isoformat()}))
     log = tmp_path / "LOG.md"

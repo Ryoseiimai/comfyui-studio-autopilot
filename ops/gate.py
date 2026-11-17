@@ -17,8 +17,11 @@ AGENT_DEFAULTS = {
     "last_agent_success_at": "",
     "last_failure_reason": "",
     "limit_reset_at": "",
+    "last_failure_at": "",
 }
 LIMIT_REASON = "利用枠切れ"
+# 前回成功からのクールダウンと、解除時刻が読めない利用枠切れの様子見に共用。
+COOLDOWN = timedelta(hours=5)
 
 
 def parse_iso(value: str) -> datetime | None:
@@ -66,11 +69,19 @@ def decide(kpi: dict, event_name: str, now: datetime) -> str:
     if event_name != "schedule":
         return ""
     last_success = parse_iso(kpi.get("last_agent_success_at", ""))
-    if last_success and now - last_success < timedelta(hours=5):
+    if last_success and now - last_success < COOLDOWN:
         return "skip: 前回成功から5h未満"
-    reset = parse_iso(kpi.get("limit_reset_at", ""))
-    if is_limit_failure(kpi.get("last_failure_reason", "")) and reset and now < reset:
-        return f"skip: 枠解除待ち（{kpi['limit_reset_at']}）"
+    if is_limit_failure(kpi.get("last_failure_reason", "")):
+        reset = parse_iso(kpi.get("limit_reset_at", ""))
+        if reset:
+            if now < reset:
+                return f"skip: 枠解除待ち（{kpi['limit_reset_at']}）"
+        else:
+            # 解除時刻の文言を読めなかった場合も、直前の利用枠切れから5hは
+            # 様子見する（読めないまま3時間おきに叩き続けて枠をさらに消費しない）。
+            last_failure = parse_iso(kpi.get("last_failure_at", ""))
+            if last_failure and now - last_failure < COOLDOWN:
+                return "skip: 枠解除待ち（解除時刻不明・様子見）"
     return ""
 
 

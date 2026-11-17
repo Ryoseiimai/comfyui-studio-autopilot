@@ -190,6 +190,7 @@ def test_legacy_cycle_count_does_not_achieve_s0(tmp_path):
     assert result["last_agent_success_at"] == ""
     assert result["last_failure_reason"] == ""
     assert result["limit_reset_at"] == ""
+    assert result["last_failure_at"] == ""
     assert not result["stages"]["S0"]["achieved"]
 
 
@@ -206,6 +207,7 @@ def test_failure_skip_success_sequence(tmp_path):
     assert failed["agent_fail_count"] == 1
     assert failed["last_failure_reason"] == "利用枠切れ"
     assert failed["limit_reset_at"] == "2026-09-27T01:30:00+00:00"
+    assert failed["last_failure_at"] == now.isoformat(timespec="seconds")
     skipped = cycle("skip")
     assert not skipped["stages"]["S0"]["achieved"]
     assert skipped["agent_success_count"] == 0
@@ -213,16 +215,18 @@ def test_failure_skip_success_sequence(tmp_path):
     assert skipped["last_agent_status"] == "skip"
     assert skipped["limit_reset_at"] == failed["limit_reset_at"]
     assert skipped["last_failure_reason"] == failed["last_failure_reason"]
+    assert skipped["last_failure_at"] == failed["last_failure_at"]
     success = cycle("success")
     assert success["stages"]["S0"]["achieved"]
     assert success["agent_success_count"] == 1
     assert success["last_agent_success_at"] == now.isoformat(timespec="seconds")
-    assert success["limit_reset_at"] == success["last_failure_reason"] == ""
+    assert success["limit_reset_at"] == success["last_failure_reason"] == success["last_failure_at"] == ""
     failed_again = cycle("failure", "overloaded with sensitive output")
     assert failed_again["stages"]["S0"]["achieved"]
     assert failed_again["agent_fail_count"] == 2
     assert failed_again["last_agent_success_at"] == success["last_agent_success_at"]
     assert failed_again["last_failure_reason"] == "Claude実行失敗"
+    assert failed_again["last_failure_at"] == now.isoformat(timespec="seconds")
     assert failed_again["counts"]["cycle_count"] == 4
 
 
