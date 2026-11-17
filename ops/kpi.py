@@ -173,12 +173,14 @@ def compute_kpi(
             agent["last_agent_success_at"] = now.isoformat(timespec="seconds")
             agent["last_failure_reason"] = ""
             agent["limit_reset_at"] = ""
+            agent["last_failure_at"] = ""
         elif agent_status == "failure":
             agent["agent_fail_count"] += 1
             limited = is_limit_failure(agent_output)
             # Persist only a fixed category, never arbitrary output containing secrets.
             agent["last_failure_reason"] = LIMIT_REASON if limited else "Claude実行失敗"
             agent["limit_reset_at"] = parse_limit_reset(agent_output, now) if limited else ""
+            agent["last_failure_at"] = now.isoformat(timespec="seconds")
 
     if increment:
         increment_cycle_count(notes_dir)
